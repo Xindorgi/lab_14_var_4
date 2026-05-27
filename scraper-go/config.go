@@ -15,6 +15,7 @@ type ParserConfig struct {
 	OutputDir             string
 	OutputFilename        string
 	EnableValidation      bool // Enable Rust validation
+	Broker                BrokerConfig // Message broker configuration
 }
 
 // LogConfig contains logging configuration
@@ -56,6 +57,7 @@ var Config = ParserConfig{
 	OutputDir:             "data",
 	OutputFilename:        "news_data.json",
 	EnableValidation:      true, // Enable validation by default
+	Broker:                DefaultBrokerConfig(),
 }
 
 // LogCfg is the logging configuration

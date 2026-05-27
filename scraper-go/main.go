@@ -38,11 +38,30 @@ type NewsScraper struct {
 	semaphore *semaphore.Weighted
 	config    ParserConfig
 	validator *Validator
+	broker    MessageBroker
 }
 
 // NewNewsScraper creates a new scraper instance
-func NewNewsScraper(config ParserConfig, enableValidation bool) *NewsScraper {
-	validator := NewValidator(enableValidation)
+func NewNewsScraper(config ParserConfig) *NewsScraper {
+	validator := NewValidator(config.EnableValidation)
+	
+	var broker MessageBroker
+	if config.Broker.Enabled {
+		var err error
+		broker, err = BrokerFactory(config.Broker)
+		if err != nil {
+			log.Printf("Warning: Failed to create broker: %v", err)
+			log.Println("Continuing without broker...")
+		} else {
+			if err := broker.Connect(); err != nil {
+				log.Printf("Warning: Failed to connect to broker: %v", err)
+				log.Println("Continuing without broker...")
+				broker = nil
+			} else {
+				log.Printf("Connected to %s broker", config.Broker.Type)
+			}
+		}
+	}
 	
 	return &NewsScraper{
 		client: &http.Client{
@@ -51,6 +70,7 @@ func NewNewsScraper(config ParserConfig, enableValidation bool) *NewsScraper {
 		semaphore: semaphore.NewWeighted(int64(config.MaxConcurrentRequests)),
 		config:    config,
 		validator: validator,
+		broker:    broker,
 	}
 }
 
@@ -240,6 +260,39 @@ func (s *NewsScraper) saveToJSON(articles []Article) error {
 	return nil
 }
 
+// publishToBroker sends articles to message broker
+func (s *NewsScraper) publishToBroker(articles []Article) error {
+	if s.broker == nil || len(articles) == 0 {
+		return nil
+	}
+
+	log.Printf("Publishing %d articles to %s broker", len(articles), s.config.Broker.Type)
+	
+	// Try batch publish first, fall back to individual
+	err := s.broker.PublishBatch(articles)
+	if err != nil {
+		log.Printf("Batch publish failed, trying individual: %v", err)
+		
+		successCount := 0
+		for i, article := range articles {
+			if err := s.broker.Publish(&article); err != nil {
+				log.Printf("Failed to publish article %d '%s': %v", i, article.Title, err)
+			} else {
+				successCount++
+			}
+		}
+		
+		log.Printf("Published %d/%d articles to broker", successCount, len(articles))
+		if successCount == 0 {
+			return fmt.Errorf("failed to publish any articles to broker")
+		}
+	} else {
+		log.Printf("Successfully published %d articles to broker", len(articles))
+	}
+	
+	return nil
+}
+
 // Run starts the scraping process
 func (s *NewsScraper) Run(ctx context.Context) error {
 	log.Println("Starting concurrent news scraper")
@@ -307,10 +360,28 @@ func (s *NewsScraper) Run(ctx context.Context) error {
 		validatedArticles = allArticles
 	}
 
-	// Save results if we have any articles
-	if len(validatedArticles) > 0 {
+	// Publish to broker if enabled
+	if s.broker != nil && len(validatedArticles) > 0 {
+		if err := s.publishToBroker(validatedArticles); err != nil {
+			log.Printf("Warning: Failed to publish to broker: %v", err)
+			log.Println("Falling back to JSON file storage...")
+			// Fall back to JSON storage
+			if err := s.saveToJSON(validatedArticles); err != nil {
+				return fmt.Errorf("failed to save articles to JSON: %w", err)
+			}
+		} else {
+			log.Println("Articles successfully published to broker")
+			// Optionally also save to JSON for backup
+			if s.config.OutputDir != "" {
+				if err := s.saveToJSON(validatedArticles); err != nil {
+					log.Printf("Warning: Failed to save backup to JSON: %v", err)
+				}
+			}
+		}
+	} else if len(validatedArticles) > 0 {
+		// Save to JSON if no broker
 		if err := s.saveToJSON(validatedArticles); err != nil {
-			return fmt.Errorf("failed to save articles: %w", err)
+			return fmt.Errorf("failed to save articles to JSON: %w", err)
 		}
 		log.Printf("Total collected %d articles (%d after validation)", 
 			len(allArticles), len(validatedArticles))
@@ -318,6 +389,14 @@ func (s *NewsScraper) Run(ctx context.Context) error {
 		log.Println("No articles collected")
 	}
 
+	return nil
+}
+
+// Close cleans up resources
+func (s *NewsScraper) Close() error {
+	if s.broker != nil {
+		return s.broker.Close()
+	}
 	return nil
 }
 
@@ -332,11 +411,9 @@ func main() {
 		log.Println("Continuing without validation...")
 	}
 	
-	// Enable validation by default (can be made configurable)
-	enableValidation := true
-
 	// Create scraper instance
-	scraper := NewNewsScraper(Config, enableValidation)
+	scraper := NewNewsScraper(Config)
+	defer scraper.Close()
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(Config.RequestTimeout+10)*time.Second)
