@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analyzer
+  namespace: news-scraper
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: analyzer
+  template:
+    metadata:
+      labels:
+        app: analyzer
+    spec:
+      containers:
+      - name: analyzer
+        image: analyzer:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+          name: api
+        env:
+        - name: BROKER_ENABLED
+          value: "true"
+        - name: BROKER_TYPE
+          value: "kafka"
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: "kafka:9092"
+        - name: KAFKA_TOPIC
+          value: "news-articles"
+        - name: KAFKA_GROUP_ID
+          value: "news-analyzer"
+        - name: API_ENABLED
+          value: "true"
+        - name: API_HOST
+          value: "0.0.0.0"
+        - name: API_PORT
+          value: "8000"
+        - name: ARROW_FLIGHT_ENABLED
+          value: "true"
+        - name: ARROW_FLIGHT_HOST
+          value: "scraper-go"
+        - name: ARROW_FLIGHT_PORT
+          value: "8815"
+        - name: WINDOW_SIZE_MINUTES
+          value: "5"
+        - name: SLIDING_INTERVAL_MINUTES
+          value: "1"
+        - name: MAX_ARTICLES_PER_WINDOW
+          value: "1000"
+        volumeMounts:
+        - name: logs-volume
+          mountPath: /app/logs
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: api
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: api
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "300m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+      volumes:
+      - name: logs-volume
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: analyzer
+  namespace: news-scraper
+spec:
+  selector:
+    app: analyzer
+  ports:
+  - port: 8000
+    targetPort: api
+    name: api

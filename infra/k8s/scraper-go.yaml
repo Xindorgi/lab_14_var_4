@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scraper-go
+  namespace: news-scraper
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: scraper-go
+  template:
+    metadata:
+      labels:
+        app: scraper-go
+    spec:
+      containers:
+      - name: scraper-go
+        image: news-scraper:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+          name: metrics
+        - containerPort: 8815
+          name: arrow-flight
+        env:
+        - name: BROKER_ENABLED
+          value: "true"
+        - name: BROKER_TYPE
+          value: "kafka"
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: "kafka:9092"
+        - name: KAFKA_TOPIC
+          value: "news-articles"
+        - name: ETCD_ENABLED
+          value: "true"
+        - name: ETCD_ENDPOINTS
+          value: "etcd:2379"
+        - name: AGGREGATION_ENABLED
+          value: "true"
+        - name: ARROW_FLIGHT_ENABLED
+          value: "true"
+        - name: ARROW_FLIGHT_HOST
+          value: "0.0.0.0"
+        - name: ARROW_FLIGHT_PORT
+          value: "8815"
+        - name: MAX_CONCURRENT_REQUESTS
+          value: "10"
+        - name: REQUEST_TIMEOUT
+          value: "30"
+        volumeMounts:
+        - name: data-volume
+          mountPath: /app/data
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+      volumes:
+      - name: data-volume
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scraper-go
+  namespace: news-scraper
+spec:
+  selector:
+    app: scraper-go
+  ports:
+  - port: 8080
+    targetPort: metrics
+    name: metrics
+  - port: 8815
+    targetPort: arrow-flight
+    name: arrow-flight
