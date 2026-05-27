@@ -40,6 +40,7 @@ type NewsScraper struct {
 	validator   *Validator
 	broker      MessageBroker
 	coordinator *EtcdCoordinator
+	aggregator  *Aggregator
 }
 
 // NewNewsScraper creates a new scraper instance
@@ -81,6 +82,16 @@ func NewNewsScraper(config ParserConfig) *NewsScraper {
 		}
 	}
 	
+	var aggregator *Aggregator
+	if config.Aggregation.Enabled {
+		aggregator = NewAggregator(config.Aggregation)
+		log.Printf("Aggregation enabled: %s window, size %d", 
+			config.Aggregation.WindowType, config.Aggregation.WindowSize)
+		
+		// Start monitoring aggregation flush channel
+		go monitorAggregation(aggregator)
+	}
+	
 	return &NewsScraper{
 		client: &http.Client{
 			Timeout: time.Duration(config.RequestTimeout) * time.Second,
@@ -90,6 +101,23 @@ func NewNewsScraper(config ParserConfig) *NewsScraper {
 		validator:   validator,
 		broker:      broker,
 		coordinator: coordinator,
+		aggregator:  aggregator,
+	}
+}
+
+// monitorAggregation monitors and logs aggregated statistics
+func monitorAggregation(aggregator *Aggregator) {
+	for stats := range aggregator.GetFlushChannel() {
+		statsJSON, err := json.MarshalIndent(stats, "", "  ")
+		if err != nil {
+			log.Printf("Failed to marshal aggregation stats: %v", err)
+			continue
+		}
+		
+		log.Printf("Aggregation window statistics:\n%s", statsJSON)
+		
+		// TODO: Send to Apache Arrow Flight server (commit 17)
+		// TODO: Send to broker for Python consumption
 	}
 }
 
@@ -432,6 +460,13 @@ func (s *NewsScraper) Run(ctx context.Context) error {
 	var allArticles []Article
 	for articles := range results {
 		allArticles = append(allArticles, articles...)
+		
+		// Add to aggregator if enabled
+		if s.aggregator != nil {
+			for _, article := range articles {
+				s.aggregator.AddArticle(article)
+			}
+		}
 	}
 
 	// Check for errors
@@ -513,6 +548,10 @@ func (s *NewsScraper) Close() error {
 		if err := s.coordinator.Close(); err != nil {
 			errors = append(errors, fmt.Errorf("coordinator close error: %w", err))
 		}
+	}
+	
+	if s.aggregator != nil {
+		s.aggregator.Stop()
 	}
 	
 	if len(errors) > 0 {

@@ -17,6 +17,7 @@ type ParserConfig struct {
 	EnableValidation      bool // Enable Rust validation
 	Broker                BrokerConfig // Message broker configuration
 	Etcd                  EtcdConfig   // etcd coordination configuration
+	Aggregation           AggregationConfig // Window aggregation configuration
 }
 
 // LogConfig contains logging configuration
@@ -60,6 +61,7 @@ var Config = ParserConfig{
 	EnableValidation:      true, // Enable validation by default
 	Broker:                DefaultBrokerConfig(),
 	Etcd:                  DefaultEtcdConfig(),
+	Aggregation:           DefaultAggregationConfig(),
 }
 
 // LogCfg is the logging configuration
