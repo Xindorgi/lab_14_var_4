@@ -383,6 +383,16 @@ func (s *NewsScraper) publishToBroker(articles []Article) error {
 
 	log.Printf("Publishing %d articles to %s broker", len(articles), s.config.Broker.Type)
 	
+	// Get metrics instance
+	metrics := GetMetrics()
+	startTime := time.Now()
+	defer func() {
+		metrics.RecordPublishingDuration(time.Since(startTime))
+	}()
+	
+	// Record batch size
+	metrics.RecordBrokerBatchSize(len(articles))
+	
 	// Try batch publish first, fall back to individual
 	err := s.broker.PublishBatch(articles)
 	if err != nil {
@@ -392,17 +402,23 @@ func (s *NewsScraper) publishToBroker(articles []Article) error {
 		for i, article := range articles {
 			if err := s.broker.Publish(&article); err != nil {
 				log.Printf("Failed to publish article %d '%s': %v", i, article.Title, err)
+				metrics.brokerMessagesFailedTotal.Inc()
 			} else {
 				successCount++
+				metrics.brokerMessagesSentTotal.Inc()
 			}
 		}
 		
 		log.Printf("Published %d/%d articles to broker", successCount, len(articles))
 		if successCount == 0 {
+			metrics.publishingErrorsTotal.Inc()
 			return fmt.Errorf("failed to publish any articles to broker")
 		}
+		metrics.articlesPublishedTotal.Add(float64(successCount))
 	} else {
 		log.Printf("Successfully published %d articles to broker", len(articles))
+		metrics.brokerMessagesSentTotal.Add(float64(len(articles)))
+		metrics.articlesPublishedTotal.Add(float64(len(articles)))
 	}
 	
 	return nil
@@ -441,6 +457,13 @@ func (s *NewsScraper) getSourcesToScrape() ([]RSSSource, error) {
 // Run starts the scraping process
 func (s *NewsScraper) Run(ctx context.Context) error {
 	log.Println("Starting concurrent news scraper")
+	
+	// Get metrics instance
+	metrics := GetMetrics()
+	startTime := time.Now()
+	defer func() {
+		metrics.RecordScrapeDuration(time.Since(startTime))
+	}()
 	
 	// Get sources to scrape (with coordination if enabled)
 	sources, err := s.getSourcesToScrape()
@@ -483,6 +506,7 @@ func (s *NewsScraper) Run(ctx context.Context) error {
 	var allArticles []Article
 	for articles := range results {
 		allArticles = append(allArticles, articles...)
+		metrics.articlesScrapedTotal.Add(float64(len(articles)))
 		
 		// Add to aggregator if enabled
 		if s.aggregator != nil {
@@ -496,6 +520,7 @@ func (s *NewsScraper) Run(ctx context.Context) error {
 	var scrapeErrors []error
 	for err := range errors {
 		scrapeErrors = append(scrapeErrors, err)
+		metrics.scrapingErrorsTotal.Inc()
 	}
 
 	if len(scrapeErrors) > 0 {
@@ -509,16 +534,20 @@ func (s *NewsScraper) Run(ctx context.Context) error {
 	var validatedArticles []Article
 	if s.validator != nil && len(allArticles) > 0 {
 		log.Println("Starting article validation...")
+		validationStartTime := time.Now()
 		validated, validationErrors := s.validator.ValidateArticles(allArticles)
+		metrics.RecordValidationDuration(time.Since(validationStartTime))
 		
 		if len(validationErrors) > 0 {
 			log.Printf("Validation errors: %d articles failed validation", len(validationErrors))
 			for _, err := range validationErrors {
 				log.Printf("Validation error: %v", err)
 			}
+			metrics.validationErrorsTotal.Add(float64(len(validationErrors)))
 		}
 		
 		validatedArticles = validated
+		metrics.articlesValidatedTotal.Add(float64(len(validated)))
 		log.Printf("Validation complete: %d articles valid, %d failed", 
 			len(validated), len(allArticles)-len(validated))
 	} else {
@@ -599,6 +628,16 @@ func main() {
 		log.Println("Continuing without validation...")
 	}
 	
+	// Start metrics server if enabled
+	if Config.Metrics.Enabled {
+		if err := StartMetricsServer(Config.Metrics.Port); err != nil {
+			log.Printf("Warning: Failed to start metrics server: %v", err)
+			log.Println("Continuing without metrics...")
+		} else {
+			log.Printf("Metrics server started on port %d", Config.Metrics.Port)
+		}
+	}
+
 	// Create scraper instance
 	scraper := NewNewsScraper(Config)
 	defer scraper.Close()

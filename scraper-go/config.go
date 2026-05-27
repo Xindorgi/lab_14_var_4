@@ -9,6 +9,22 @@ type RSSSource struct {
 	Type string // "rss" or "html"
 }
 
+// MetricsConfig contains metrics server configuration
+type MetricsConfig struct {
+	Enabled bool
+	Port    int
+	Path    string
+}
+
+// DefaultMetricsConfig returns default metrics configuration
+func DefaultMetricsConfig() MetricsConfig {
+	return MetricsConfig{
+		Enabled: true,
+		Port:    8080,
+		Path:    "/metrics",
+	}
+}
+
 // ParserConfig contains parser configuration
 type ParserConfig struct {
 	// Basic settings
@@ -30,6 +46,9 @@ type ParserConfig struct {
 
 	// Arrow Flight configuration
 	ArrowFlight ArrowFlightConfig
+
+	// Metrics configuration
+	Metrics MetricsConfig
 }
 
 // Default configuration values
@@ -53,6 +72,9 @@ var Config = ParserConfig{
 
 	// Arrow Flight configuration
 	ArrowFlight: DefaultArrowFlightConfig(),
+
+	// Metrics configuration
+	Metrics: DefaultMetricsConfig(),
 }
 
 // RSS sources to scrape
