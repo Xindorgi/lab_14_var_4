@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
 Real-time news analytics dashboard using Streamlit.
+Features live-updating charts and statistics with auto-refresh.
+Integrated with analyzer REST API.
 """
 
 import streamlit as st
@@ -11,14 +13,8 @@ from datetime import datetime, timedelta
 import time
 import json
 import numpy as np
-
-# Try to import analytics modules
-try:
-    from analyzer.arrow_client import create_arrow_client
-    from analyzer.config import load_config_from_env
-    ARROW_AVAILABLE = True
-except ImportError:
-    ARROW_AVAILABLE = False
+import requests
+from typing import Dict, List, Any, Optional
 
 # Page configuration
 st.set_page_config(
@@ -47,6 +43,40 @@ st.markdown("""
         color: #6B7280;
         text-align: right;
     }
+    .live-indicator {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        background-color: #10B981;
+        border-radius: 50%;
+        margin-right: 5px;
+        animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+        0% { opacity: 1; }
+        50% { opacity: 0.5; }
+        100% { opacity: 1; }
+    }
+    .api-status {
+        padding: 0.5rem;
+        border-radius: 0.25rem;
+        margin-bottom: 1rem;
+    }
+    .api-status.healthy {
+        background-color: #D1FAE5;
+        color: #065F46;
+        border: 1px solid #10B981;
+    }
+    .api-status.degraded {
+        background-color: #FEF3C7;
+        color: #92400E;
+        border: 1px solid #F59E0B;
+    }
+    .api-status.unavailable {
+        background-color: #FEE2E2;
+        color: #991B1B;
+        border: 1px solid #EF4444;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -57,21 +87,86 @@ if 'stats_data' not in st.session_state:
     st.session_state.stats_data = []
 if 'auto_refresh' not in st.session_state:
     st.session_state.auto_refresh = True
+if 'api_available' not in st.session_state:
+    st.session_state.api_available = False
+if 'api_base_url' not in st.session_state:
+    st.session_state.api_base_url = "http://localhost:8000"
 
-# Load configuration
+# API Client
+class AnalyzerAPIClient:
+    """Client for analyzer REST API"""
+    
+    def __init__(self, base_url: str = "http://localhost:8000"):
+        self.base_url = base_url.rstrip("/")
+        self.session = requests.Session()
+        self.session.timeout = 5  # 5 second timeout
+    
+    def health_check(self) -> Dict[str, Any]:
+        """Check API health"""
+        try:
+            response = self.session.get(f"{self.base_url}/health", timeout=2)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            return {
+                "status": "unavailable",
+                "error": str(e),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+    
+    def get_metrics(self) -> Optional[Dict[str, Any]]:
+        """Get current metrics from API"""
+        try:
+            response = self.session.get(f"{self.base_url}/metrics", timeout=3)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException:
+            return None
+    
+    def get_stats(self) -> Optional[Dict[str, Any]]:
+        """Get detailed statistics from API"""
+        try:
+            response = self.session.get(f"{self.base_url}/stats", timeout=3)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException:
+            return None
+    
+    def get_sources(self) -> Optional[Dict[str, Any]]:
+        """Get source distribution from API"""
+        try:
+            response = self.session.get(f"{self.base_url}/sources", timeout=3)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException:
+            return None
+    
+    def get_history(self, hours: int = 24, limit: int = 100) -> Optional[Dict[str, Any]]:
+        """Get historical data from API"""
+        try:
+            params = {"hours": hours, "limit": limit}
+            response = self.session.get(f"{self.base_url}/history", params=params, timeout=5)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException:
+            return None
+    
+    def get_pipeline_status(self) -> Optional[Dict[str, Any]]:
+        """Get pipeline status from API"""
+        try:
+            response = self.session.get(f"{self.base_url}/pipeline", timeout=3)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException:
+            return None
+
+# Initialize API client
 @st.cache_resource
-def get_config():
-    return load_config_from_env()
+def get_api_client():
+    return AnalyzerAPIClient(st.session_state.api_base_url)
 
-@st.cache_resource
-def get_arrow_client():
-    if ARROW_AVAILABLE:
-        config = get_config()
-        return create_arrow_client(config)
-    return None
-
-# Mock data for demonstration
-def get_mock_stats():
+# Mock data for demonstration (fallback)
+def get_mock_stats() -> List[Dict[str, Any]]:
     """Generate mock statistics for demonstration"""
     now = datetime.now()
     hours_ago = [now - timedelta(hours=i) for i in range(24, 0, -1)]
@@ -96,35 +191,39 @@ def get_mock_stats():
     
     return stats
 
-def fetch_real_stats():
-    """Fetch real statistics from Arrow Flight server"""
-    client = get_arrow_client()
-    if client and client.is_available():
-        return client.get_aggregated_stats()
-    return get_mock_stats()
+def fetch_api_metrics() -> Optional[Dict[str, Any]]:
+    """Fetch metrics from analyzer API"""
+    client = get_api_client()
+    return client.get_metrics()
 
-def create_metrics_row(stats):
-    """Create metrics row from latest statistics"""
-    if not stats:
+def fetch_api_stats() -> Optional[Dict[str, Any]]:
+    """Fetch detailed statistics from analyzer API"""
+    client = get_api_client()
+    return client.get_stats()
+
+def fetch_api_sources() -> Optional[Dict[str, Any]]:
+    """Fetch source distribution from analyzer API"""
+    client = get_api_client()
+    return client.get_sources()
+
+def create_metrics_row(metrics: Dict[str, Any]) -> Dict[str, str]:
+    """Create metrics row from API metrics"""
+    if not metrics:
         return {}
     
-    latest = stats[-1]
-    
     return {
-        'Total Articles': latest.get('total_articles', 0),
-        'Publishing Rate': f"{latest.get('publishing_rate', 0):.1f}/min",
-        'Avg Title Length': f"{latest.get('avg_title_length', 0):.0f} chars",
-        'Sources': len(latest.get('articles_by_source', {})),
+        'Total Articles': str(metrics.get('total_articles', 0)),
+        'Publishing Rate': f"{metrics.get('publishing_rate', 0):.1f}/min",
+        'Avg Title Length': f"{metrics.get('avg_title_length', 0):.0f} chars",
+        'Sources': str(metrics.get('sources_count', 0)),
     }
 
-def create_source_distribution_chart(stats):
-    """Create source distribution chart"""
-    if not stats:
+def create_source_distribution_chart(sources_data: Dict[str, Any]) -> Optional[go.Figure]:
+    """Create source distribution chart from API data"""
+    if not sources_data or 'sources' not in sources_data:
         return None
     
-    latest = stats[-1]
-    sources = latest.get('articles_by_source', {})
-    
+    sources = sources_data['sources']
     if not sources:
         return None
     
@@ -146,14 +245,18 @@ def create_source_distribution_chart(stats):
     
     return fig
 
-def create_timeline_chart(stats):
-    """Create timeline chart of article counts"""
-    if len(stats) < 2:
+def create_timeline_chart(history_data: Dict[str, Any]) -> Optional[go.Figure]:
+    """Create timeline chart from historical data"""
+    if not history_data or 'history' not in history_data:
+        return None
+    
+    history = history_data['history']
+    if len(history) < 2:
         return None
     
     # Prepare data
-    times = [s['window_start'] for s in stats]
-    counts = [s['total_articles'] for s in stats]
+    times = [datetime.fromisoformat(h['window_start'].replace('Z', '+00:00')) for h in history]
+    counts = [h['total_articles'] for h in history]
     
     fig = go.Figure()
     
@@ -175,13 +278,17 @@ def create_timeline_chart(stats):
     
     return fig
 
-def create_publishing_rate_chart(stats):
-    """Create publishing rate chart"""
-    if len(stats) < 2:
+def create_publishing_rate_chart(history_data: Dict[str, Any]) -> Optional[go.Figure]:
+    """Create publishing rate chart from historical data"""
+    if not history_data or 'history' not in history_data:
         return None
     
-    times = [s['window_start'] for s in stats]
-    rates = [s['publishing_rate'] for s in stats]
+    history = history_data['history']
+    if len(history) < 2:
+        return None
+    
+    times = [datetime.fromisoformat(h['window_start'].replace('Z', '+00:00')) for h in history]
+    rates = [h['publishing_rate'] for h in history]
     
     fig = go.Figure()
     
@@ -203,6 +310,15 @@ def create_publishing_rate_chart(stats):
     )
     
     return fig
+
+def get_api_status_class(status: str) -> str:
+    """Get CSS class for API status"""
+    if status == 'healthy':
+        return 'api-status healthy'
+    elif status == 'degraded':
+        return 'api-status degraded'
+    else:
+        return 'api-status unavailable'
 
 # Main app
 def main():
@@ -226,9 +342,38 @@ def main():
         st.subheader("Data Source")
         data_source = st.radio(
             "Select data source:",
-            ["Mock Data", "Arrow Flight Server"],
-            index=0 if not ARROW_AVAILABLE else 1
+            ["Analyzer API", "Mock Data"],
+            index=0
         )
+        
+        # API Configuration
+        if data_source == "Analyzer API":
+            st.subheader("API Configuration")
+            api_url = st.text_input(
+                "API Base URL",
+                value=st.session_state.api_base_url,
+                help="URL of the analyzer REST API (e.g., http://localhost:8000)"
+            )
+            
+            if api_url != st.session_state.api_base_url:
+                st.session_state.api_base_url = api_url
+                st.rerun()
+            
+            # Test connection
+            if st.button("Test API Connection"):
+                client = get_api_client()
+                health = client.health_check()
+                status = health.get('status', 'unavailable')
+                
+                if status == 'healthy':
+                    st.success("✅ API is healthy and responding")
+                elif status == 'degraded':
+                    st.warning("⚠️ API is degraded (pipeline not available)")
+                else:
+                    st.error("❌ API is unavailable")
+                
+                if 'error' in health:
+                    st.error(f"Error: {health['error']}")
         
         st.subheader("Time Range")
         time_range = st.select_slider(
@@ -244,14 +389,32 @@ def main():
         
         st.markdown("### System Status")
         
-        # Mock status indicators
+        # Check API status
+        client = get_api_client()
+        health = client.health_check()
+        status = health.get('status', 'unavailable')
+        
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("Go Scraper", "Running", delta="Active")
-            st.metric("Kafka", "Healthy", delta="Online")
+            if data_source == "Analyzer API":
+                status_icon = "✅" if status == 'healthy' else "⚠️" if status == 'degraded' else "❌"
+                st.metric("Analyzer API", status.title(), delta=status_icon)
+            else:
+                st.metric("Data Source", "Mock", delta="Test")
+            
+            st.metric("Dashboard", "Running", delta="Active")
+        
         with col2:
-            st.metric("Python Analyzer", "Running", delta="Active")
-            st.metric("Database", "Connected", delta="Online")
+            if data_source == "Analyzer API" and status == 'healthy':
+                pipeline_status = client.get_pipeline_status()
+                if pipeline_status:
+                    st.metric("Pipeline", "Running", delta=f"{pipeline_status.get('total_articles', 0)} articles")
+                else:
+                    st.metric("Pipeline", "Unknown", delta="N/A")
+            else:
+                st.metric("Pipeline", "Mock", delta="Simulated")
+            
+            st.metric("Update Interval", "30s", delta="Auto")
         
         st.divider()
         
@@ -262,70 +425,134 @@ def main():
         - **Go Scraper**: Collects news from RSS/HTML sources
         - **Kafka/NATS**: Message broker for data streaming
         - **Python Analyzer**: Processes and analyzes articles
-        - **Arrow Flight**: High-performance data transfer
+        - **REST API**: Provides metrics for this dashboard
         
         Data updates every 30 seconds.
         """)
     
-    # Fetch data
-    if data_source == "Arrow Flight Server" and ARROW_AVAILABLE:
-        stats = fetch_real_stats()
-    else:
-        stats = get_mock_stats()
+    # Fetch data based on selected source
+    metrics = None
+    sources_data = None
+    history_data = None
     
-    # Store in session state
-    st.session_state.stats_data = stats
+    if data_source == "Analyzer API":
+        # Fetch from API
+        metrics = fetch_api_metrics()
+        sources_data = fetch_api_sources()
+        
+        # Convert time range to hours
+        hours_map = {"1h": 1, "6h": 6, "12h": 12, "24h": 24, "48h": 48}
+        hours = hours_map.get(time_range, 24)
+        history_data = get_api_client().get_history(hours=hours, limit=100)
+        
+        # Update API availability
+        st.session_state.api_available = metrics is not None
+        
+        # Show API status
+        status_class = get_api_status_class(status)
+        status_text = {
+            'healthy': '✅ Analyzer API is healthy',
+            'degraded': '⚠️ Analyzer API is degraded (pipeline not available)',
+            'unavailable': '❌ Analyzer API is unavailable'
+        }.get(status, '❌ Analyzer API is unavailable')
+        
+        st.markdown(f'<div class="{status_class}">{status_text}</div>', unsafe_allow_html=True)
+        
+        if not metrics:
+            st.warning("Could not fetch metrics from API. Falling back to mock data.")
+            stats = get_mock_stats()
+            # Convert mock stats to metrics format
+            if stats:
+                latest = stats[-1]
+                metrics = {
+                    'total_articles': latest['total_articles'],
+                    'publishing_rate': latest['publishing_rate'],
+                    'avg_title_length': latest['avg_title_length'],
+                    'sources_count': len(latest['articles_by_source']),
+                    'articles_per_source': latest['articles_by_source']
+                }
+    else:
+        # Use mock data
+        stats = get_mock_stats()
+        if stats:
+            latest = stats[-1]
+            metrics = {
+                'total_articles': latest['total_articles'],
+                'publishing_rate': latest['publishing_rate'],
+                'avg_title_length': latest['avg_title_length'],
+                'sources_count': len(latest['articles_by_source']),
+                'articles_per_source': latest['articles_by_source']
+            }
+        
+        # Generate mock sources data
+        if metrics and 'articles_per_source' in metrics:
+            sources_data = {
+                'sources': metrics['articles_per_source'],
+                'total_sources': metrics['sources_count'],
+                'top_source': max(metrics['articles_per_source'].items(), key=lambda x: x[1])[0] if metrics['articles_per_source'] else None
+            }
+        
+        # Generate mock history
+        history_data = {
+            'history': [
+                {
+                    'window_start': (datetime.now() - timedelta(minutes=i*5)).isoformat(),
+                    'window_end': (datetime.now() - timedelta(minutes=i*5-5)).isoformat(),
+                    'total_articles': np.random.randint(10, 100),
+                    'publishing_rate': round(np.random.uniform(0.5, 5.0), 2)
+                }
+                for i in range(1, 13)  # Last 12 windows (1 hour)
+            ]
+        }
     
     # Metrics row
     st.subheader("Current Metrics")
     
-    metrics = create_metrics_row(stats)
     if metrics:
-        cols = st.columns(len(metrics))
-        for col, (key, value) in zip(cols, metrics.items()):
-            with col:
-                st.markdown(f'<div class="metric-card"><h3>{key}</h3><h2>{value}</h2></div>', unsafe_allow_html=True)
+        metrics_row = create_metrics_row(metrics)
+        if metrics_row:
+            cols = st.columns(len(metrics_row))
+            for col, (key, value) in zip(cols, metrics_row.items()):
+                with col:
+                    st.markdown(f'<div class="metric-card"><h3>{key}</h3><h2>{value}</h2></div>', unsafe_allow_html=True)
+    else:
+        st.warning("No metrics available")
     
     # Charts
     col1, col2 = st.columns(2)
     
     with col1:
-        source_chart = create_source_distribution_chart(stats)
+        source_chart = create_source_distribution_chart(sources_data)
         if source_chart:
             st.plotly_chart(source_chart, use_container_width=True)
         else:
             st.info("No source distribution data available")
     
     with col2:
-        timeline_chart = create_timeline_chart(stats)
+        timeline_chart = create_timeline_chart(history_data)
         if timeline_chart:
             st.plotly_chart(timeline_chart, use_container_width=True)
         else:
             st.info("No timeline data available")
     
     # Publishing rate chart (full width)
-    rate_chart = create_publishing_rate_chart(stats)
+    rate_chart = create_publishing_rate_chart(history_data)
     if rate_chart:
         st.plotly_chart(rate_chart, use_container_width=True)
     
     # Raw data table
-    if show_raw_data and stats:
+    if show_raw_data and history_data and 'history' in history_data:
         st.subheader("Raw Statistics Data")
         
         # Convert to DataFrame
         df_data = []
-        for stat in stats[-10:]:  # Show last 10 windows
+        for stat in history_data['history'][:10]:  # Show last 10 windows
             row = {
-                'Window Start': stat['window_start'].strftime('%H:%M:%S') if isinstance(stat['window_start'], datetime) else stat['window_start'],
-                'Window End': stat['window_end'].strftime('%H:%M:%S') if isinstance(stat['window_end'], datetime) else stat['window_end'],
+                'Window Start': stat['window_start'],
+                'Window End': stat.get('window_end', ''),
                 'Total Articles': stat['total_articles'],
                 'Publishing Rate': f"{stat['publishing_rate']:.2f}/min",
             }
-            
-            # Add source counts
-            for source, count in stat.get('articles_by_source', {}).items():
-                row[f'Source: {source}'] = count
-            
             df_data.append(row)
         
         if df_data:
@@ -348,9 +575,12 @@ def main():
     st.divider()
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.markdown("**Data Source:** " + ("Arrow Flight Server" if data_source == "Arrow Flight Server" and ARROW_AVAILABLE else "Mock Data"))
+        st.markdown(f"**Data Source:** {data_source}")
     with col2:
-        st.markdown(f"**Windows Displayed:** {len(stats)}")
+        if history_data and 'history' in history_data:
+            st.markdown(f"**Windows Displayed:** {len(history_data['history'])}")
+        else:
+            st.markdown("**Windows Displayed:** 0")
     with col3:
         st.markdown(f"**Last Update:** {st.session_state.last_update.strftime('%H:%M:%S')}")
 

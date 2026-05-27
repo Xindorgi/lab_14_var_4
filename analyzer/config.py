@@ -73,7 +73,19 @@ class ArrowFlightConfig:
     host: str = "localhost"
     port: int = 8815
     endpoint: str = "/arrow.flight.protocol.FlightService/"
+
+@dataclass
+class ApiConfig:
+    """REST API configuration"""
+    enabled: bool = True
+    host: str = "localhost"
+    port: int = 8000
+    cors_origins: List[str] = None
     
+    def __post_init__(self):
+        if self.cors_origins is None:
+            self.cors_origins = ["*"]
+
 @dataclass
 class LoggingConfig:
     """Logging configuration"""
@@ -91,6 +103,7 @@ class AppConfig:
     redis: RedisConfig
     analysis: AnalysisConfig
     arrow_flight: ArrowFlightConfig
+    api: ApiConfig
     logging: LoggingConfig
     
     @classmethod
@@ -101,6 +114,7 @@ class AppConfig:
             redis=RedisConfig(),
             analysis=AnalysisConfig(),
             arrow_flight=ArrowFlightConfig(),
+            api=ApiConfig(),
             logging=LoggingConfig()
         )
 
@@ -149,6 +163,12 @@ def load_config_from_env() -> AppConfig:
     config.arrow_flight.enabled = os.getenv("ARROW_FLIGHT_ENABLED", "false").lower() == "true"
     config.arrow_flight.host = os.getenv("ARROW_FLIGHT_HOST", "localhost")
     config.arrow_flight.port = int(os.getenv("ARROW_FLIGHT_PORT", "8815"))
+    
+    # API configuration
+    config.api.enabled = os.getenv("API_ENABLED", "true").lower() == "true"
+    config.api.host = os.getenv("API_HOST", "localhost")
+    config.api.port = int(os.getenv("API_PORT", "8000"))
+    config.api.cors_origins = os.getenv("API_CORS_ORIGINS", "*").split(",")
     
     # Logging configuration
     config.logging.level = os.getenv("LOG_LEVEL", "INFO")

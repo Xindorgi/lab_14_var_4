@@ -1,5 +1,7 @@
 package main
 
+import "time"
+
 // RSSSource represents a news source configuration
 type RSSSource struct {
 	URL  string
@@ -9,26 +11,51 @@ type RSSSource struct {
 
 // ParserConfig contains parser configuration
 type ParserConfig struct {
+	// Basic settings
 	MaxConcurrentRequests int
-	RequestTimeout        int
+	RequestTimeout        int    // seconds
 	UserAgent             string
 	OutputDir             string
 	OutputFilename        string
-	EnableValidation      bool // Enable Rust validation
-	Broker                BrokerConfig // Message broker configuration
-	Etcd                  EtcdConfig   // etcd coordination configuration
-	Aggregation           AggregationConfig // Window aggregation configuration
-	ArrowFlight           ArrowFlightConfig // Apache Arrow Flight configuration
+	EnableValidation      bool
+
+	// Broker configuration
+	Broker BrokerConfig
+
+	// etcd coordination
+	Etcd EtcdConfig
+
+	// Aggregation configuration
+	Aggregation AggregationConfig
+
+	// Arrow Flight configuration
+	ArrowFlight ArrowFlightConfig
 }
 
-// LogConfig contains logging configuration
-type LogConfig struct {
-	Level  string
-	Format string
-	File   string
+// Default configuration values
+var Config = ParserConfig{
+	// Basic settings
+	MaxConcurrentRequests: 10,
+	RequestTimeout:        30,
+	UserAgent:             "NewsScraper/1.0 (Go http.Client)",
+	OutputDir:             "data",
+	OutputFilename:        "news_data.json",
+	EnableValidation:      true,
+
+	// Broker configuration
+	Broker: DefaultBrokerConfig(),
+
+	// etcd coordination
+	Etcd: DefaultEtcdConfig(),
+
+	// Aggregation configuration
+	Aggregation: DefaultAggregationConfig(),
+
+	// Arrow Flight configuration
+	ArrowFlight: DefaultArrowFlightConfig(),
 }
 
-// RSSSources is a list of news sources for testing
+// RSS sources to scrape
 var RSSSources = []RSSSource{
 	{
 		URL:  "https://lenta.ru/rss/news",
@@ -41,34 +68,13 @@ var RSSSources = []RSSSource{
 		Type: "rss",
 	},
 	{
-		URL:  "https://ria.ru/export/rss2/index.xml",
+		URL:  "https://ria.ru/export/rss2/archive/index.xml",
 		Name: "RIA Novosti",
 		Type: "rss",
 	},
 	{
-		URL:  "https://www.bbc.com/russian/news",
+		URL:  "https://www.bbc.com/russian",
 		Name: "BBC Russian",
-		Type: "html", // For HTML parsing demonstration
+		Type: "html",
 	},
-}
-
-// Config is the global configuration
-var Config = ParserConfig{
-	MaxConcurrentRequests: 10,
-	RequestTimeout:        30,
-	UserAgent:             "NewsScraper/1.0 (Go http.Client)",
-	OutputDir:             "data",
-	OutputFilename:        "news_data.json",
-	EnableValidation:      true, // Enable validation by default
-	Broker:                DefaultBrokerConfig(),
-	Etcd:                  DefaultEtcdConfig(),
-	Aggregation:           DefaultAggregationConfig(),
-	ArrowFlight:           DefaultArrowFlightConfig(),
-}
-
-// LogCfg is the logging configuration
-var LogCfg = LogConfig{
-	Level:  "INFO",
-	Format: "2006-01-02 15:04:05 - %s - %s - %s",
-	File:   "scraper.log",
 }
