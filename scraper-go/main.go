@@ -37,16 +37,20 @@ type NewsScraper struct {
 	client    *http.Client
 	semaphore *semaphore.Weighted
 	config    ParserConfig
+	validator *Validator
 }
 
 // NewNewsScraper creates a new scraper instance
-func NewNewsScraper(config ParserConfig) *NewsScraper {
+func NewNewsScraper(config ParserConfig, enableValidation bool) *NewsScraper {
+	validator := NewValidator(enableValidation)
+	
 	return &NewsScraper{
 		client: &http.Client{
 			Timeout: time.Duration(config.RequestTimeout) * time.Second,
 		},
 		semaphore: semaphore.NewWeighted(int64(config.MaxConcurrentRequests)),
 		config:    config,
+		validator: validator,
 	}
 }
 
@@ -283,12 +287,33 @@ func (s *NewsScraper) Run(ctx context.Context) error {
 		}
 	}
 
+	// Validate articles if validator is enabled
+	var validatedArticles []Article
+	if s.validator != nil && len(allArticles) > 0 {
+		log.Println("Starting article validation...")
+		validated, validationErrors := s.validator.ValidateArticles(allArticles)
+		
+		if len(validationErrors) > 0 {
+			log.Printf("Validation errors: %d articles failed validation", len(validationErrors))
+			for _, err := range validationErrors {
+				log.Printf("Validation error: %v", err)
+			}
+		}
+		
+		validatedArticles = validated
+		log.Printf("Validation complete: %d articles valid, %d failed", 
+			len(validated), len(allArticles)-len(validated))
+	} else {
+		validatedArticles = allArticles
+	}
+
 	// Save results if we have any articles
-	if len(allArticles) > 0 {
-		if err := s.saveToJSON(allArticles); err != nil {
+	if len(validatedArticles) > 0 {
+		if err := s.saveToJSON(validatedArticles); err != nil {
 			return fmt.Errorf("failed to save articles: %w", err)
 		}
-		log.Printf("Total collected %d articles", len(allArticles))
+		log.Printf("Total collected %d articles (%d after validation)", 
+			len(allArticles), len(validatedArticles))
 	} else {
 		log.Println("No articles collected")
 	}
@@ -301,8 +326,17 @@ func main() {
 	log.SetFlags(0)
 	log.SetOutput(os.Stdout)
 
+	// Check if validator can be built
+	if err := BuildValidator(); err != nil {
+		log.Printf("Warning: Validator initialization failed: %v", err)
+		log.Println("Continuing without validation...")
+	}
+	
+	// Enable validation by default (can be made configurable)
+	enableValidation := true
+
 	// Create scraper instance
-	scraper := NewNewsScraper(Config)
+	scraper := NewNewsScraper(Config, enableValidation)
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(Config.RequestTimeout+10)*time.Second)

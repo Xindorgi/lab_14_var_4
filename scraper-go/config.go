@@ -14,6 +14,7 @@ type ParserConfig struct {
 	UserAgent             string
 	OutputDir             string
 	OutputFilename        string
+	EnableValidation      bool // Enable Rust validation
 }
 
 // LogConfig contains logging configuration
@@ -54,6 +55,7 @@ var Config = ParserConfig{
 	UserAgent:             "NewsScraper/1.0 (Go http.Client)",
 	OutputDir:             "data",
 	OutputFilename:        "news_data.json",
+	EnableValidation:      true, // Enable validation by default
 }
 
 // LogCfg is the logging configuration
