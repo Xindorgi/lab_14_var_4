@@ -1,0 +1,44 @@
+# Docker ignore file for Go scraper
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Build artifacts
+news-scraper
+*.log
+*.out
+*.test
+*.prof
+
+# Dependency directories
+vendor/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+
+# Configuration files (except those needed)
+!config.go
+!go.mod
+!go.sum
+
+# Source code
+*.go
+
+# Data directory (will be created at runtime)
+data/
+
+# Rust validator artifacts (if any)
+target/
+Cargo.lock

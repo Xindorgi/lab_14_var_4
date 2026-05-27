@@ -152,9 +152,105 @@ services:
       timeout: 5s
       retries: 5
 
+  # Go scraper service
+  scraper-go:
+    build:
+      context: ../scraper-go
+      dockerfile: Dockerfile
+    container_name: scraper-go
+    depends_on:
+      etcd:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8080:8080"  # Metrics endpoint (to be added in Commit 24)
+      - "8815:8815"  # Arrow Flight server
+    environment:
+      - BROKER_ENABLED=true
+      - BROKER_TYPE=kafka
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - KAFKA_TOPIC=news-articles
+      - ETCD_ENABLED=true
+      - ETCD_ENDPOINTS=etcd:2379
+      - AGGREGATION_ENABLED=true
+      - ARROW_FLIGHT_ENABLED=true
+      - ARROW_FLIGHT_HOST=0.0.0.0
+    volumes:
+      - scraper-data:/app/data
+    networks:
+      - news-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # Python analyzer service
+  analyzer:
+    build:
+      context: ../analyzer
+      dockerfile: Dockerfile
+    container_name: analyzer
+    depends_on:
+      kafka:
+        condition: service_healthy
+      scraper-go:
+        condition: service_healthy
+    ports:
+      - "8000:8000"  # FastAPI REST API
+    environment:
+      - BROKER_ENABLED=true
+      - BROKER_TYPE=kafka
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - KAFKA_TOPIC=news-articles
+      - API_ENABLED=true
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - ARROW_FLIGHT_ENABLED=true
+      - ARROW_FLIGHT_HOST=scraper-go
+      - ARROW_FLIGHT_PORT=8815
+    volumes:
+      - analyzer-logs:/app/logs
+    networks:
+      - news-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # Streamlit dashboard service
+  dashboard:
+    build:
+      context: ../dashboard
+      dockerfile: Dockerfile
+    container_name: dashboard
+    depends_on:
+      analyzer:
+        condition: service_healthy
+    ports:
+      - "8501:8501"  # Streamlit dashboard
+    environment:
+      - API_BASE_URL=http://analyzer:8000
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+    networks:
+      - news-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   redis_data:
+  scraper-data:
+  analyzer-logs:
 
 networks:
   news-network:
