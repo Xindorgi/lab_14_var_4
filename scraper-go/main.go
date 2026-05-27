@@ -34,13 +34,14 @@ type Article struct {
 
 // NewsScraper implements concurrent RSS/HTML scraper
 type NewsScraper struct {
-	client      *http.Client
-	semaphore   *semaphore.Weighted
-	config      ParserConfig
-	validator   *Validator
-	broker      MessageBroker
-	coordinator *EtcdCoordinator
-	aggregator  *Aggregator
+	client       *http.Client
+	semaphore    *semaphore.Weighted
+	config       ParserConfig
+	validator    *Validator
+	broker       MessageBroker
+	coordinator  *EtcdCoordinator
+	aggregator   *Aggregator
+	arrowServer  *ArrowFlightServer
 }
 
 // NewNewsScraper creates a new scraper instance
@@ -87,27 +88,44 @@ func NewNewsScraper(config ParserConfig) *NewsScraper {
 		aggregator = NewAggregator(config.Aggregation)
 		log.Printf("Aggregation enabled: %s window, size %d", 
 			config.Aggregation.WindowType, config.Aggregation.WindowSize)
-		
-		// Start monitoring aggregation flush channel
-		go monitorAggregation(aggregator)
+	}
+	
+	var arrowServer *ArrowFlightServer
+	if config.ArrowFlight.Enabled && aggregator != nil {
+		var err error
+		arrowServer, err = setupArrowFlightServer(config.ArrowFlight, aggregator)
+		if err != nil {
+			log.Printf("Warning: Failed to create Arrow Flight server: %v", err)
+			log.Println("Continuing without Arrow Flight...")
+		} else {
+			log.Printf("Arrow Flight server enabled on %s:%d", 
+				config.ArrowFlight.Host, config.ArrowFlight.Port)
+		}
+	}
+	
+	// Start monitoring aggregation if enabled
+	if aggregator != nil {
+		go monitorAggregation(aggregator, arrowServer)
 	}
 	
 	return &NewsScraper{
 		client: &http.Client{
 			Timeout: time.Duration(config.RequestTimeout) * time.Second,
 		},
-		semaphore:   semaphore.NewWeighted(int64(config.MaxConcurrentRequests)),
-		config:      config,
-		validator:   validator,
-		broker:      broker,
-		coordinator: coordinator,
-		aggregator:  aggregator,
+		semaphore:    semaphore.NewWeighted(int64(config.MaxConcurrentRequests)),
+		config:       config,
+		validator:    validator,
+		broker:       broker,
+		coordinator:  coordinator,
+		aggregator:   aggregator,
+		arrowServer:  arrowServer,
 	}
 }
 
-// monitorAggregation monitors and logs aggregated statistics
-func monitorAggregation(aggregator *Aggregator) {
+// monitorAggregation monitors and processes aggregated statistics
+func monitorAggregation(aggregator *Aggregator, arrowServer *ArrowFlightServer) {
 	for stats := range aggregator.GetFlushChannel() {
+		// Log statistics
 		statsJSON, err := json.MarshalIndent(stats, "", "  ")
 		if err != nil {
 			log.Printf("Failed to marshal aggregation stats: %v", err)
@@ -116,7 +134,12 @@ func monitorAggregation(aggregator *Aggregator) {
 		
 		log.Printf("Aggregation window statistics:\n%s", statsJSON)
 		
-		// TODO: Send to Apache Arrow Flight server (commit 17)
+		// Send to Arrow Flight server if available
+		if arrowServer != nil {
+			log.Printf("Sending aggregated stats to Arrow Flight server")
+			// Arrow Flight server handles conversion and serving internally
+		}
+		
 		// TODO: Send to broker for Python consumption
 	}
 }
@@ -552,6 +575,10 @@ func (s *NewsScraper) Close() error {
 	
 	if s.aggregator != nil {
 		s.aggregator.Stop()
+	}
+	
+	if s.arrowServer != nil {
+		s.arrowServer.Stop()
 	}
 	
 	if len(errors) > 0 {

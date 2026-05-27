@@ -18,6 +18,7 @@ type ParserConfig struct {
 	Broker                BrokerConfig // Message broker configuration
 	Etcd                  EtcdConfig   // etcd coordination configuration
 	Aggregation           AggregationConfig // Window aggregation configuration
+	ArrowFlight           ArrowFlightConfig // Apache Arrow Flight configuration
 }
 
 // LogConfig contains logging configuration
@@ -62,6 +63,7 @@ var Config = ParserConfig{
 	Broker:                DefaultBrokerConfig(),
 	Etcd:                  DefaultEtcdConfig(),
 	Aggregation:           DefaultAggregationConfig(),
+	ArrowFlight:           DefaultArrowFlightConfig(),
 }
 
 // LogCfg is the logging configuration
