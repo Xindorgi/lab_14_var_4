@@ -34,11 +34,12 @@ type Article struct {
 
 // NewsScraper implements concurrent RSS/HTML scraper
 type NewsScraper struct {
-	client    *http.Client
-	semaphore *semaphore.Weighted
-	config    ParserConfig
-	validator *Validator
-	broker    MessageBroker
+	client      *http.Client
+	semaphore   *semaphore.Weighted
+	config      ParserConfig
+	validator   *Validator
+	broker      MessageBroker
+	coordinator *EtcdCoordinator
 }
 
 // NewNewsScraper creates a new scraper instance
@@ -63,15 +64,49 @@ func NewNewsScraper(config ParserConfig) *NewsScraper {
 		}
 	}
 	
+	var coordinator *EtcdCoordinator
+	if config.Etcd.Enabled {
+		var err error
+		coordinator, err = NewEtcdCoordinator(config.Etcd)
+		if err != nil {
+			log.Printf("Warning: Failed to create etcd coordinator: %v", err)
+			log.Println("Continuing without etcd coordination...")
+		} else {
+			log.Println("Connected to etcd for distributed coordination")
+			
+			// Register sources in etcd
+			if err := registerSourcesInEtcd(coordinator); err != nil {
+				log.Printf("Warning: Failed to register sources in etcd: %v", err)
+			}
+		}
+	}
+	
 	return &NewsScraper{
 		client: &http.Client{
 			Timeout: time.Duration(config.RequestTimeout) * time.Second,
 		},
-		semaphore: semaphore.NewWeighted(int64(config.MaxConcurrentRequests)),
-		config:    config,
-		validator: validator,
-		broker:    broker,
+		semaphore:   semaphore.NewWeighted(int64(config.MaxConcurrentRequests)),
+		config:      config,
+		validator:   validator,
+		broker:      broker,
+		coordinator: coordinator,
 	}
+}
+
+// registerSourcesInEtcd registers all configured sources in etcd
+func registerSourcesInEtcd(coordinator *EtcdCoordinator) error {
+	for _, source := range RSSSources {
+		config := map[string]interface{}{
+			"name": source.Name,
+			"type": source.Type,
+			"url":  source.URL,
+		}
+		if err := coordinator.RegisterSource(source.URL, config); err != nil {
+			return fmt.Errorf("failed to register source %s: %w", source.Name, err)
+		}
+	}
+	log.Printf("Registered %d sources in etcd", len(RSSSources))
+	return nil
 }
 
 // fetchURL fetches content from a URL
@@ -219,6 +254,35 @@ func (s *NewsScraper) scrapeSource(ctx context.Context, source RSSSource) ([]Art
 	}
 }
 
+// scrapeSourceWithLock scrapes a source with etcd locking
+func (s *NewsScraper) scrapeSourceWithLock(ctx context.Context, source RSSSource) ([]Article, error) {
+	if s.coordinator != nil {
+		// Try to acquire lock with timeout
+		locked, err := s.coordinator.AcquireSourceLock(source.URL, 10*time.Second)
+		if err != nil {
+			log.Printf("Error acquiring lock for %s: %v", source.Name, err)
+			return nil, err
+		}
+		
+		if !locked {
+			log.Printf("Could not acquire lock for %s (may be locked by another worker)", source.Name)
+			return nil, fmt.Errorf("source %s is locked by another worker", source.Name)
+		}
+		
+		// Ensure lock is released
+		defer func() {
+			if err := s.coordinator.ReleaseSourceLock(source.URL); err != nil {
+				log.Printf("Error releasing lock for %s: %v", source.Name, err)
+			}
+		}()
+		
+		log.Printf("Acquired lock for source: %s", source.Name)
+	}
+	
+	// Scrape the source
+	return s.scrapeSource(ctx, source)
+}
+
 // saveToJSON saves articles to JSON file
 func (s *NewsScraper) saveToJSON(articles []Article) error {
 	// Create output directory if it doesn't exist
@@ -293,21 +357,64 @@ func (s *NewsScraper) publishToBroker(articles []Article) error {
 	return nil
 }
 
+// getSourcesToScrape returns sources to scrape based on coordination mode
+func (s *NewsScraper) getSourcesToScrape() ([]RSSSource, error) {
+	if s.coordinator != nil {
+		// Get available sources from etcd
+		availableURLs, err := s.coordinator.GetAvailableSources()
+		if err != nil {
+			log.Printf("Error getting available sources from etcd: %v", err)
+			log.Println("Falling back to configured sources...")
+			return RSSSources, nil
+		}
+		
+		// Map URLs to RSSSource objects
+		var sources []RSSSource
+		for _, url := range availableURLs {
+			for _, source := range RSSSources {
+				if source.URL == url {
+					sources = append(sources, source)
+					break
+				}
+			}
+		}
+		
+		log.Printf("Found %d available sources via etcd coordination", len(sources))
+		return sources, nil
+	}
+	
+	// No coordination, use all configured sources
+	return RSSSources, nil
+}
+
 // Run starts the scraping process
 func (s *NewsScraper) Run(ctx context.Context) error {
 	log.Println("Starting concurrent news scraper")
+	
+	// Get sources to scrape (with coordination if enabled)
+	sources, err := s.getSourcesToScrape()
+	if err != nil {
+		return fmt.Errorf("failed to get sources: %w", err)
+	}
+	
+	if len(sources) == 0 {
+		log.Println("No sources available for scraping")
+		return nil
+	}
+	
+	log.Printf("Scraping %d sources", len(sources))
 
 	var wg sync.WaitGroup
-	results := make(chan []Article, len(RSSSources))
-	errors := make(chan error, len(RSSSources))
+	results := make(chan []Article, len(sources))
+	errors := make(chan error, len(sources))
 
 	// Launch goroutines for each source
-	for _, source := range RSSSources {
+	for _, source := range sources {
 		wg.Add(1)
 		go func(src RSSSource) {
 			defer wg.Done()
 			
-			articles, err := s.scrapeSource(ctx, src)
+			articles, err := s.scrapeSourceWithLock(ctx, src)
 			if err != nil {
 				errors <- fmt.Errorf("error scraping %s: %w", src.Name, err)
 				return
@@ -394,9 +501,24 @@ func (s *NewsScraper) Run(ctx context.Context) error {
 
 // Close cleans up resources
 func (s *NewsScraper) Close() error {
+	var errors []error
+	
 	if s.broker != nil {
-		return s.broker.Close()
+		if err := s.broker.Close(); err != nil {
+			errors = append(errors, fmt.Errorf("broker close error: %w", err))
+		}
 	}
+	
+	if s.coordinator != nil {
+		if err := s.coordinator.Close(); err != nil {
+			errors = append(errors, fmt.Errorf("coordinator close error: %w", err))
+		}
+	}
+	
+	if len(errors) > 0 {
+		return fmt.Errorf("errors during close: %v", errors)
+	}
+	
 	return nil
 }
 
