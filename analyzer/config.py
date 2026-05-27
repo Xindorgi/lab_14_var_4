@@ -67,6 +67,14 @@ class AnalysisConfig:
     enable_trend_detection: bool = True
     
 @dataclass
+class ArrowFlightConfig:
+    """Apache Arrow Flight configuration"""
+    enabled: bool = False
+    host: str = "localhost"
+    port: int = 8815
+    endpoint: str = "/arrow.flight.protocol.FlightService/"
+    
+@dataclass
 class LoggingConfig:
     """Logging configuration"""
     level: str = "INFO"
@@ -82,6 +90,7 @@ class AppConfig:
     database: DatabaseConfig
     redis: RedisConfig
     analysis: AnalysisConfig
+    arrow_flight: ArrowFlightConfig
     logging: LoggingConfig
     
     @classmethod
@@ -91,6 +100,7 @@ class AppConfig:
             database=DatabaseConfig(),
             redis=RedisConfig(),
             analysis=AnalysisConfig(),
+            arrow_flight=ArrowFlightConfig(),
             logging=LoggingConfig()
         )
 
@@ -134,6 +144,11 @@ def load_config_from_env() -> AppConfig:
     config.analysis.enable_sentiment_analysis = os.getenv("ENABLE_SENTIMENT_ANALYSIS", "false").lower() == "true"
     config.analysis.enable_topic_modeling = os.getenv("ENABLE_TOPIC_MODELING", "false").lower() == "true"
     config.analysis.enable_trend_detection = os.getenv("ENABLE_TREND_DETECTION", "true").lower() == "true"
+    
+    # Arrow Flight configuration
+    config.arrow_flight.enabled = os.getenv("ARROW_FLIGHT_ENABLED", "false").lower() == "true"
+    config.arrow_flight.host = os.getenv("ARROW_FLIGHT_HOST", "localhost")
+    config.arrow_flight.port = int(os.getenv("ARROW_FLIGHT_PORT", "8815"))
     
     # Logging configuration
     config.logging.level = os.getenv("LOG_LEVEL", "INFO")
