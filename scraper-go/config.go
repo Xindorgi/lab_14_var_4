@@ -16,6 +16,7 @@ type ParserConfig struct {
 	OutputFilename        string
 	EnableValidation      bool // Enable Rust validation
 	Broker                BrokerConfig // Message broker configuration
+	Etcd                  EtcdConfig   // etcd coordination configuration
 }
 
 // LogConfig contains logging configuration
@@ -58,6 +59,7 @@ var Config = ParserConfig{
 	OutputFilename:        "news_data.json",
 	EnableValidation:      true, // Enable validation by default
 	Broker:                DefaultBrokerConfig(),
+	Etcd:                  DefaultEtcdConfig(),
 }
 
 // LogCfg is the logging configuration
