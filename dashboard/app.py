@@ -37,6 +37,11 @@ st.markdown("""
         padding: 1rem;
         border-radius: 0.5rem;
         border-left: 4px solid #3B82F6;
+        transition: transform 0.2s ease-in-out;
+    }
+    .metric-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
     }
     .update-time {
         font-size: 0.8rem;
@@ -77,6 +82,20 @@ st.markdown("""
         color: #991B1B;
         border: 1px solid #EF4444;
     }
+    .chart-container {
+        background-color: white;
+        border-radius: 0.5rem;
+        padding: 1rem;
+        box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+        margin-bottom: 1rem;
+        transition: box-shadow 0.2s ease-in-out;
+    }
+    .chart-container:hover {
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    }
+    .tab-content {
+        padding: 1rem 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -91,6 +110,10 @@ if 'api_available' not in st.session_state:
     st.session_state.api_available = False
 if 'api_base_url' not in st.session_state:
     st.session_state.api_base_url = "http://localhost:8000"
+if 'selected_tab' not in st.session_state:
+    st.session_state.selected_tab = "overview"
+if 'chart_history' not in st.session_state:
+    st.session_state.chart_history = {}
 
 # API Client
 class AnalyzerAPIClient:
@@ -206,6 +229,7 @@ def fetch_api_sources() -> Optional[Dict[str, Any]]:
     client = get_api_client()
     return client.get_sources()
 
+# Enhanced chart creation functions
 def create_metrics_row(metrics: Dict[str, Any]) -> Dict[str, str]:
     """Create metrics row from API metrics"""
     if not metrics:
@@ -219,7 +243,7 @@ def create_metrics_row(metrics: Dict[str, Any]) -> Dict[str, str]:
     }
 
 def create_source_distribution_chart(sources_data: Dict[str, Any]) -> Optional[go.Figure]:
-    """Create source distribution chart from API data"""
+    """Create enhanced source distribution chart from API data"""
     if not sources_data or 'sources' not in sources_data:
         return None
     
@@ -232,21 +256,83 @@ def create_source_distribution_chart(sources_data: Dict[str, Any]) -> Optional[g
         'Articles': list(sources.values())
     }).sort_values('Articles', ascending=False)
     
+    # Create bar chart with enhanced styling
     fig = px.bar(df, x='Source', y='Articles', 
-                 title='Articles by Source',
+                 title='📊 Articles by Source',
                  color='Articles',
-                 color_continuous_scale='Blues')
+                 color_continuous_scale='Viridis',
+                 text='Articles')
     
     fig.update_layout(
         xaxis_title="",
         yaxis_title="Number of Articles",
-        showlegend=False
+        showlegend=False,
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(size=12),
+        hovermode='x unified',
+        xaxis=dict(tickangle=45)
+    )
+    
+    fig.update_traces(
+        texttemplate='%{text}',
+        textposition='outside',
+        marker_line_color='rgb(8,48,107)',
+        marker_line_width=1.5,
+        opacity=0.8
+    )
+    
+    return fig
+
+def create_source_pie_chart(sources_data: Dict[str, Any]) -> Optional[go.Figure]:
+    """Create pie chart for source distribution"""
+    if not sources_data or 'sources' not in sources_data:
+        return None
+    
+    sources = sources_data['sources']
+    if not sources:
+        return None
+    
+    df = pd.DataFrame({
+        'Source': list(sources.keys()),
+        'Articles': list(sources.values())
+    }).sort_values('Articles', ascending=False)
+    
+    # Limit to top 8 sources for readability
+    if len(df) > 8:
+        other_count = df['Articles'][8:].sum()
+        df = df.head(8)
+        df = pd.concat([df, pd.DataFrame({'Source': ['Other'], 'Articles': [other_count]})])
+    
+    fig = px.pie(df, values='Articles', names='Source',
+                 title='🥧 Source Distribution',
+                 color_discrete_sequence=px.colors.sequential.Viridis)
+    
+    fig.update_layout(
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(size=12),
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        )
+    )
+    
+    fig.update_traces(
+        textposition='inside',
+        textinfo='percent+label',
+        hole=0.3,
+        marker=dict(line=dict(color='#FFFFFF', width=2))
     )
     
     return fig
 
 def create_timeline_chart(history_data: Dict[str, Any]) -> Optional[go.Figure]:
-    """Create timeline chart from historical data"""
+    """Create enhanced timeline chart from historical data"""
     if not history_data or 'history' not in history_data:
         return None
     
@@ -258,28 +344,55 @@ def create_timeline_chart(history_data: Dict[str, Any]) -> Optional[go.Figure]:
     times = [datetime.fromisoformat(h['window_start'].replace('Z', '+00:00')) for h in history]
     counts = [h['total_articles'] for h in history]
     
+    # Calculate moving average
+    window_size = min(5, len(counts))
+    moving_avg = pd.Series(counts).rolling(window=window_size, center=True).mean().tolist()
+    
     fig = go.Figure()
     
+    # Add main line
     fig.add_trace(go.Scatter(
         x=times,
         y=counts,
         mode='lines+markers',
         name='Articles',
-        line=dict(color='#3B82F6', width=2),
-        marker=dict(size=6)
+        line=dict(color='#3B82F6', width=3),
+        marker=dict(size=8, color='#3B82F6'),
+        hovertemplate='<b>%{x|%H:%M}</b><br>Articles: %{y}<extra></extra>'
     ))
     
+    # Add moving average
+    if len(moving_avg) > window_size:
+        fig.add_trace(go.Scatter(
+            x=times[window_size//2:-window_size//2],
+            y=moving_avg[window_size//2:-window_size//2],
+            mode='lines',
+            name=f'{window_size}-window MA',
+            line=dict(color='#EF4444', width=2, dash='dash'),
+            hovertemplate='<b>%{x|%H:%M}</b><br>MA: %{y:.1f}<extra></extra>'
+        ))
+    
     fig.update_layout(
-        title='Article Volume Over Time',
+        title='📈 Article Volume Over Time',
         xaxis_title="Time",
         yaxis_title="Articles per 5-min Window",
-        hovermode='x unified'
+        hovermode='x unified',
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(size=12),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        )
     )
     
     return fig
 
 def create_publishing_rate_chart(history_data: Dict[str, Any]) -> Optional[go.Figure]:
-    """Create publishing rate chart from historical data"""
+    """Create enhanced publishing rate chart from historical data"""
     if not history_data or 'history' not in history_data:
         return None
     
@@ -297,19 +410,122 @@ def create_publishing_rate_chart(history_data: Dict[str, Any]) -> Optional[go.Fi
         y=rates,
         mode='lines',
         name='Publishing Rate',
-        line=dict(color='#10B981', width=2),
+        line=dict(color='#10B981', width=3),
         fill='tozeroy',
-        fillcolor='rgba(16, 185, 129, 0.1)'
+        fillcolor='rgba(16, 185, 129, 0.2)',
+        hovertemplate='<b>%{x|%H:%M}</b><br>Rate: %{y:.2f}/min<extra></extra>'
     ))
     
+    # Add threshold lines
+    avg_rate = np.mean(rates) if rates else 0
+    fig.add_hline(y=avg_rate, line_dash="dot", line_color="gray",
+                  annotation_text=f"Avg: {avg_rate:.2f}/min",
+                  annotation_position="bottom right")
+    
     fig.update_layout(
-        title='Publishing Rate (articles/minute)',
+        title='🚀 Publishing Rate (articles/minute)',
         xaxis_title="Time",
         yaxis_title="Articles per Minute",
-        hovermode='x unified'
+        hovermode='x unified',
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(size=12),
+        showlegend=False
     )
     
     return fig
+
+def create_heatmap_chart(history_data: Dict[str, Any]) -> Optional[go.Figure]:
+    """Create heatmap of article activity by hour of day"""
+    if not history_data or 'history' not in history_data:
+        return None
+    
+    history = history_data['history']
+    if len(history) < 24:  # Need at least 24 hours of data
+        return None
+    
+    # Prepare data for heatmap
+    data = []
+    for h in history:
+        dt = datetime.fromisoformat(h['window_start'].replace('Z', '+00:00'))
+        hour = dt.hour
+        day = dt.strftime('%Y-%m-%d')
+        data.append({
+            'day': day,
+            'hour': hour,
+            'articles': h['total_articles']
+        })
+    
+    df = pd.DataFrame(data)
+    
+    # Pivot for heatmap
+    pivot_df = df.pivot_table(index='hour', columns='day', values='articles', aggfunc='sum')
+    
+    fig = go.Figure(data=go.Heatmap(
+        z=pivot_df.values,
+        x=pivot_df.columns,
+        y=[f"{h:02d}:00" for h in pivot_df.index],
+        colorscale='Viridis',
+        hovertemplate='Day: %{x}<br>Hour: %{y}<br>Articles: %{z}<extra></extra>'
+    ))
+    
+    fig.update_layout(
+        title='🔥 Activity Heatmap (Articles by Hour)',
+        xaxis_title="Date",
+        yaxis_title="Hour of Day",
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(size=12)
+    )
+    
+    return fig
+
+def create_trend_indicators(history_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Calculate trend indicators from historical data"""
+    if not history_data or 'history' not in history_data:
+        return {}
+    
+    history = history_data['history']
+    if len(history) < 2:
+        return {}
+    
+    # Get recent data
+    recent = history[-min(6, len(history)):]  # Last 6 windows (30 minutes)
+    older = history[-min(12, len(history)):-6] if len(history) > 6 else []
+    
+    recent_avg = np.mean([h['total_articles'] for h in recent]) if recent else 0
+    older_avg = np.mean([h['total_articles'] for h in older]) if older else recent_avg
+    
+    # Calculate trends
+    if older_avg > 0:
+        trend_pct = ((recent_avg - older_avg) / older_avg) * 100
+    else:
+        trend_pct = 0
+    
+    # Determine trend direction and color
+    if trend_pct > 10:
+        trend = "📈 Strong Increase"
+        color = "#10B981"
+    elif trend_pct > 2:
+        trend = "↗️ Moderate Increase"
+        color = "#34D399"
+    elif trend_pct < -10:
+        trend = "📉 Strong Decrease"
+        color = "#EF4444"
+    elif trend_pct < -2:
+        trend = "↘️ Moderate Decrease"
+        color = "#F87171"
+    else:
+        trend = "➡️ Stable"
+        color = "#6B7280"
+    
+    return {
+        'trend': trend,
+        'trend_pct': abs(trend_pct),
+        'color': color,
+        'recent_avg': recent_avg,
+        'older_avg': older_avg
+    }
 
 def get_api_status_class(status: str) -> str:
     """Get CSS class for API status"""
@@ -331,7 +547,7 @@ def main():
     with col2:
         st.markdown(f'<div class="update-time">Last update: {st.session_state.last_update.strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
         auto_refresh = st.checkbox("Auto-refresh", value=st.session_state.auto_refresh)
-        if st.button("Refresh Now"):
+        if st.button("🔄 Refresh Now"):
             st.session_state.last_update = datetime.now()
             st.rerun()
     
@@ -384,6 +600,8 @@ def main():
         
         st.subheader("Visualization")
         show_raw_data = st.checkbox("Show raw data", False)
+        show_heatmap = st.checkbox("Show activity heatmap", True)
+        show_trends = st.checkbox("Show trend indicators", True)
         
         st.divider()
         
@@ -501,12 +719,12 @@ def main():
                     'total_articles': np.random.randint(10, 100),
                     'publishing_rate': round(np.random.uniform(0.5, 5.0), 2)
                 }
-                for i in range(1, 13)  # Last 12 windows (1 hour)
+                for i in range(1, min(100, hours * 12) + 1)
             ]
         }
     
-    # Metrics row
-    st.subheader("Current Metrics")
+    # Metrics row with enhanced styling
+    st.subheader("📊 Current Metrics")
     
     if metrics:
         metrics_row = create_metrics_row(metrics)
@@ -518,35 +736,84 @@ def main():
     else:
         st.warning("No metrics available")
     
-    # Charts
-    col1, col2 = st.columns(2)
+    # Trend indicators
+    if show_trends and history_data:
+        trends = create_trend_indicators(history_data)
+        if trends:
+            st.markdown(f"""
+            <div style="background-color:{trends['color']}20; padding:1rem; border-radius:0.5rem; border-left:4px solid {trends['color']}; margin-bottom:1rem;">
+                <h4 style="margin:0; color:{trends['color']};">{trends['trend']}</h4>
+                <p style="margin:0.5rem 0 0 0; color:#6B7280; font-size:0.9rem;">
+                    Recent average: {trends['recent_avg']:.1f} articles/window • 
+                    Change: {trends['trend_pct']:.1f}%
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
     
-    with col1:
-        source_chart = create_source_distribution_chart(sources_data)
-        if source_chart:
-            st.plotly_chart(source_chart, use_container_width=True)
+    # Tabbed interface for charts
+    tab1, tab2, tab3 = st.tabs(["📈 Overview", "📊 Sources", "🔥 Activity"])
+    
+    with tab1:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown('<div class="chart-container">', unsafe_allow_html=True)
+            timeline_chart = create_timeline_chart(history_data)
+            if timeline_chart:
+                st.plotly_chart(timeline_chart, use_container_width=True, config={'displayModeBar': True})
+            else:
+                st.info("No timeline data available")
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        with col2:
+            st.markdown('<div class="chart-container">', unsafe_allow_html=True)
+            rate_chart = create_publishing_rate_chart(history_data)
+            if rate_chart:
+                st.plotly_chart(rate_chart, use_container_width=True, config={'displayModeBar': True})
+            else:
+                st.info("No publishing rate data available")
+            st.markdown('</div>', unsafe_allow_html=True)
+    
+    with tab2:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown('<div class="chart-container">', unsafe_allow_html=True)
+            source_chart = create_source_distribution_chart(sources_data)
+            if source_chart:
+                st.plotly_chart(source_chart, use_container_width=True, config={'displayModeBar': True})
+            else:
+                st.info("No source distribution data available")
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        with col2:
+            st.markdown('<div class="chart-container">', unsafe_allow_html=True)
+            pie_chart = create_source_pie_chart(sources_data)
+            if pie_chart:
+                st.plotly_chart(pie_chart, use_container_width=True, config={'displayModeBar': True})
+            else:
+                st.info("No source data available for pie chart")
+            st.markdown('</div>', unsafe_allow_html=True)
+    
+    with tab3:
+        if show_heatmap:
+            st.markdown('<div class="chart-container">', unsafe_allow_html=True)
+            heatmap_chart = create_heatmap_chart(history_data)
+            if heatmap_chart:
+                st.plotly_chart(heatmap_chart, use_container_width=True, config={'displayModeBar': True})
+            else:
+                st.info("Not enough data for heatmap (need at least 24 hours of data)")
+            st.markdown('</div>', unsafe_allow_html=True)
         else:
-            st.info("No source distribution data available")
-    
-    with col2:
-        timeline_chart = create_timeline_chart(history_data)
-        if timeline_chart:
-            st.plotly_chart(timeline_chart, use_container_width=True)
-        else:
-            st.info("No timeline data available")
-    
-    # Publishing rate chart (full width)
-    rate_chart = create_publishing_rate_chart(history_data)
-    if rate_chart:
-        st.plotly_chart(rate_chart, use_container_width=True)
+            st.info("Heatmap visualization is disabled. Enable it in the sidebar.")
     
     # Raw data table
     if show_raw_data and history_data and 'history' in history_data:
-        st.subheader("Raw Statistics Data")
+        st.subheader("📋 Raw Statistics Data")
         
         # Convert to DataFrame
         df_data = []
-        for stat in history_data['history'][:10]:  # Show last 10 windows
+        for stat in history_data['history'][:20]:  # Show last 20 windows
             row = {
                 'Window Start': stat['window_start'],
                 'Window End': stat.get('window_end', ''),
@@ -557,9 +824,9 @@ def main():
         
         if df_data:
             df = pd.DataFrame(df_data)
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df, use_container_width=True, height=300)
     
-    # Auto-refresh logic
+    # Auto-refresh logic with fragment
     if auto_refresh:
         time_since_update = (datetime.now() - st.session_state.last_update).seconds
         if time_since_update > 30:  # Refresh every 30 seconds
@@ -569,7 +836,7 @@ def main():
         # Show refresh countdown
         refresh_in = 30 - time_since_update
         if refresh_in > 0:
-            st.sidebar.progress(refresh_in / 30, text=f"Refreshing in {refresh_in}s")
+            st.sidebar.progress(refresh_in / 30, text=f"🔄 Refreshing in {refresh_in}s")
     
     # Footer
     st.divider()
